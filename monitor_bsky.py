@@ -27,6 +27,67 @@ def save_posts_to_file():
             json.dump(found_posts, f, ensure_ascii=False, indent=2)
         print(f"\nPosts salvos em: {filename}")
 
+def extract_embed_data(record):
+    """Extrai dados de mídia incorporada no post"""
+    embed_data = {}
+    
+    if hasattr(record, 'embed'):
+        embed = record.embed
+        
+        # Imagens
+        if hasattr(embed, 'images'):
+            embed_data['images'] = []
+            for img in embed.images:
+                image_data = {
+                    'alt': getattr(img, 'alt', ''),
+                    'image_cid': getattr(img, 'image', {}).get('$link', '') if hasattr(img, 'image') else ''
+                }
+                embed_data['images'].append(image_data)
+        
+        # Links externos
+        if hasattr(embed, 'external'):
+            ext = embed.external
+            embed_data['external'] = {
+                'uri': getattr(ext, 'uri', ''),
+                'title': getattr(ext, 'title', ''),
+                'description': getattr(ext, 'description', '')
+            }
+            
+        # Record (repost/quote)
+        if hasattr(embed, 'record'):
+            rec = embed.record
+            embed_data['record'] = {
+                'uri': getattr(rec, 'uri', ''),
+                'cid': getattr(rec, 'cid', '')
+            }
+    
+    return embed_data if embed_data else None
+
+def extract_facets(record):
+    """Extrai menções, hashtags e links do post"""
+    facets_data = {
+        'mentions': [],
+        'links': [],
+        'tags': []
+    }
+    
+    if hasattr(record, 'facets') and record.facets:
+        for facet in record.facets:
+            if hasattr(facet, 'features'):
+                for feature in facet.features:
+                    # Menções
+                    if hasattr(feature, 'did'):
+                        facets_data['mentions'].append(feature.did)
+                    # Links
+                    elif hasattr(feature, 'uri'):
+                        facets_data['links'].append(feature.uri)
+                    # Tags
+                    elif hasattr(feature, 'tag'):
+                        facets_data['tags'].append(feature.tag)
+    
+    # Retorna apenas categorias não vazias
+    return {k: v for k, v in facets_data.items() if v}
+
 def on_message(message):
     """
     Callback que é chamado para cada mensagem recebida do Firehose.
@@ -63,14 +124,43 @@ def on_message(message):
                             stats['matching_posts'] += 1
                             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             
-                            # Dados do post
+                            # Dados básicos do post
                             post_data = {
-                                'timestamp': timestamp,
-                                'author': commit.repo,
+                                'timestamp_coletado': timestamp,
+                                'author_did': commit.repo,
                                 'text': record.text,
                                 'keywords_found': matching_keywords,
                                 'post_uri': f"at://{commit.repo}/{op.path}"
                             }
+                            
+                            # Adiciona timestamp original de criação
+                            if hasattr(record, 'createdAt'):
+                                post_data['created_at'] = record.createdAt
+                            
+                            # Adiciona dados de resposta (se for uma resposta)
+                            if hasattr(record, 'reply'):
+                                post_data['reply_to'] = {
+                                    'root': getattr(record.reply, 'root', {}).get('uri', '') if hasattr(record.reply, 'root') else '',
+                                    'parent': getattr(record.reply, 'parent', {}).get('uri', '') if hasattr(record.reply, 'parent') else ''
+                                }
+                            
+                            # Adiciona dados de mídia incorporada (imagens, links, etc.)
+                            embed_data = extract_embed_data(record)
+                            if embed_data:
+                                post_data['embeds'] = embed_data
+                            
+                            # Adiciona menções, hashtags e links
+                            facets = extract_facets(record)
+                            if facets:
+                                post_data['facets'] = facets
+                            
+                            # Adiciona dados de idioma (se disponível)
+                            if hasattr(record, 'langs'):
+                                post_data['languages'] = record.langs
+                            
+                            # Adiciona informações técnicas
+                            post_data['cid'] = op.cid
+                            post_data['path'] = op.path
                             
                             # Adiciona à lista de posts encontrados
                             found_posts.append(post_data)
